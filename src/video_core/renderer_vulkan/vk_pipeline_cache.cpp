@@ -2160,43 +2160,47 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::stop_token stop_loading,
              jobs.size(), file_entries, num_threads);
     VideoCommon::StutterTrace::BootMarker("precache_begin", fmt::format("jobs={}", jobs.size()));
     if (!jobs.empty()) {
-        auto batch_scope = shader_jobs->BeginBatch();
         // Background jobs of the shader workers, each built and destroyed: only the driver's
         // cache keeps it.
         const VideoCommon::ShaderJobBatch batch = shader_jobs->CreateBatch();
-        for (size_t index = 0; index < jobs.size(); ++index) {
-            shader_jobs->Submit(
-                {
-                    .priority = VideoCommon::ShaderJobPriority::Background,
-                    .cpu_bytes = jobs[index].cpu_bytes,
-                    .driver_bytes = DriverCompileBytes,
-                    .cpu = [&built, &done, index, translate = std::move(jobs[index].translate)](
-                               VideoCommon::ShaderJobContext& context) mutable
-                    -> VideoCommon::ShaderDriverStage {
-                        Common::UniqueFunction<bool> build;
-                        if (!context.StopRequested()) {
-                            try {
-                                build = translate();
-                            } catch (const std::exception& e) {
-                                LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
+        // Submissions are batched only while the loop runs: holding the batch across Idle()
+        // would keep the workers from being notified.
+        {
+            auto batch_scope = shader_jobs->BeginBatch();
+            for (size_t index = 0; index < jobs.size(); ++index) {
+                shader_jobs->Submit(
+                    {
+                        .priority = VideoCommon::ShaderJobPriority::Background,
+                        .cpu_bytes = jobs[index].cpu_bytes,
+                        .driver_bytes = DriverCompileBytes,
+                        .cpu = [&built, &done, index, translate = std::move(jobs[index].translate)](
+                                   VideoCommon::ShaderJobContext& context) mutable
+                        -> VideoCommon::ShaderDriverStage {
+                            Common::UniqueFunction<bool> build;
+                            if (!context.StopRequested()) {
+                                try {
+                                    build = translate();
+                                } catch (const std::exception& e) {
+                                    LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
+                                }
                             }
-                        }
-                        translate = {};
-                        if (!build) {
-                            done.fetch_add(1);
-                            return {};
-                        }
-                        return [&built, &done, index, build = std::move(build)]() mutable {
-                            try {
-                                built[index] = build();
-                            } catch (const std::exception& e) {
-                                LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
+                            translate = {};
+                            if (!build) {
+                                done.fetch_add(1);
+                                return {};
                             }
-                            done.fetch_add(1);
-                        };
+                            return [&built, &done, index, build = std::move(build)]() mutable {
+                                try {
+                                    built[index] = build();
+                                } catch (const std::exception& e) {
+                                    LOG_DEBUG(Render_Vulkan, "Shader precache: {}", e.what());
+                                }
+                                done.fetch_add(1);
+                            };
+                        },
                     },
-                },
-                &batch);
+                    &batch);
+            }
         }
         while (!batch.Idle()) {
             if (stop_loading.stop_requested() || ShaderWarm::TakeSkipWarm()) {
