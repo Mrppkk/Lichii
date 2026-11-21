@@ -2267,7 +2267,8 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::stop_token stop_loading,
     }
 
     const auto begin = std::chrono::steady_clock::now();
-    const size_t num_threads = GetTotalPipelineWorkers();
+    const auto workers = GetSmartPipelineWorkers(&device, true);
+    const size_t num_threads = workers.cpu_workers + workers.driver_workers;
     std::vector<u8> built(jobs.size());
     std::atomic<size_t> done{};
     bool skipped = false;
