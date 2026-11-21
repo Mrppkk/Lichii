@@ -297,6 +297,8 @@ public:
     enum class SeparatePool : u32 {
         SparsePages,
         DeviceBuffers,
+        RenderTargets,
+        Count,
     };
     static constexpr VkDeviceSize SeparatePoolBlockSize = DefaultSeparatePoolBlockSize;
 
@@ -305,7 +307,7 @@ public:
     }
 
     /// The pool of that kind for a memory type, created on first use (null if that failed).
-    VmaPool GetSeparatePool(SeparatePool kind, u32 memory_type) const;
+    VmaPool GetSeparatePool(SeparatePool kind, u32 memory_type, bool create = true) const;
 
     /// Returns the logical device.
     const vk::Device& GetLogical() const {
@@ -1422,7 +1424,7 @@ private:
     VkInstance instance;         ///< Vulkan instance.
     VmaAllocator allocator{};    ///< VMA allocator.
     mutable std::mutex separate_pools_mutex;
-    mutable std::array<std::array<VmaPool, VK_MAX_MEMORY_TYPES>, 2> separate_pools{};
+    mutable std::array<std::array<VmaPool, VK_MAX_MEMORY_TYPES>, static_cast<size_t>(SeparatePool::Count)> separate_pools{};
     vk::DeviceDispatch dld;      ///< Device function pointers.
     vk::PhysicalDevice physical; ///< Physical device.
     vk::Device logical;          ///< Logical device.

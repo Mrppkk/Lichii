@@ -157,49 +157,6 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
 }
 
 template <class P>
-void TextureCache<P>::DeleteSupersededImages() {
-    // Ocarina of Time moves its render targets within a memory pool every frame while the camera
-    // moves (about 45 images a frame in the Castle Town guard house), far more than the
-    // collector removes. Once the memory of an image belongs entirely to newer images (see
-    // ClassifySuperseded for what that has to prove) nothing can read it any more.
-    static constexpr u64 MinFramesUnused = 2;
-    if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || frame_tick <= MinFramesUnused ||
-        frame_tick - superseded_activity_frame > MinFramesUnused + 1) {
-        return;
-    }
-    superseded_ids.clear();
-    lru_cache.ForEachItemBelow(frame_tick - MinFramesUnused, [this](ImageId image_id) {
-        const Image& image = slot_images[image_id];
-        if (image.overlapping_images.empty()) {
-            return false;
-        }
-        switch (ClassifySuperseded(slot_images, image)) {
-        case Supersession::Clean:
-        case Supersession::Rewritten:
-            superseded_ids.push_back(image_id);
-            break;
-        case Supersession::Unproven:
-            ++superseded_unproven;
-            break;
-        case Supersession::None:
-            break;
-        }
-        return false;
-    });
-    for (const ImageId image_id : superseded_ids) {
-        Image& image = slot_images[image_id];
-        ++(image.IsSafeGpuCopy() ? superseded_rewritten_deletes : superseded_clean_deletes);
-        // Not marked stale (MarkStale): the covering images hold the bytes, and marking their
-        // pages would let an image made over them skip its upload without being filled.
-        if (True(image.flags & ImageFlagBits::Tracked)) {
-            UntrackImage(image, image_id);
-        }
-        UnregisterImage(image_id);
-        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
-    }
-}
-
-template <class P>
 void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) {
     const StutterTrace::SiteScope site{StutterTrace::Site::TextureCollect};
     host_oom_retry_frame = 0;
@@ -1629,7 +1586,7 @@ void TextureCache<P>::TickFrame() {
                     }
                     // The device's budget is not all the room there is: see HostCriticalMemory.
                     // The usage is the driver's, which still counts images waiting to be freed.
-                    const std::optional<u64> commit_room = Common::GetSystemCommitRoom();
+                    const std::optional<u64> commit_room = Common::GetProcessCommitRoom();
                     const u64 host_critical =
                         commit_room
                             ? HostCriticalMemory(runtime.GetDeviceMemoryUsage(), *commit_room)
@@ -1825,13 +1782,6 @@ void TextureCache<P>::TickFrame() {
                  "for buffer-written pages; {} MiB of pages marked stale",
                  tc_stale_skips, tc_stale_skip_bytes >> 20, tc_stale_gpu_written,
                  (stale_pages.Count() << StalePages::PAGE_BITS) >> 20);
-        LOG_INFO(HW_GPU,
-                 "Texture cache last 600 frames: superseded images deleted {} ({} held GPU data "
-                 "rewritten by newer images); GPU-written candidates without that proof, summed "
-                 "over frames: {}",
-                 superseded_clean_deletes + superseded_rewritten_deletes,
-                 superseded_rewritten_deletes, superseded_unproven);
-        superseded_clean_deletes = superseded_rewritten_deletes = superseded_unproven = 0;
         tc_stale_skips = tc_stale_skip_bytes = tc_stale_gpu_written = 0;
         images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
         astc_opaque_images = astc_alpha_images = 0;
@@ -1859,7 +1809,6 @@ void TextureCache<P>::TickFrame() {
         out_of_memory = failed != seen_failed_images;
         seen_failed_images = failed;
     }
-    DeleteSupersededImages();
     // A forced collect for memory spilled to host memory collects as at the critical threshold
     // for this frame: it stops once usage is under it and keeps the retention floor. Collecting as
     // out of memory instead deleted every image unused for 10 frames, decoded ASTC included, on a
@@ -2068,6 +2017,8 @@ void TextureCache<P>::MemoizeTextures(SampledTextureMemo& memo,
     const bool via_header_index =
         maxwell3d->regs.sampler_binding == Tegra::Engines::Maxwell3D::Regs::SamplerBinding::ViaHeaderBinding;
     const bool native_tiling = gpu_memory->UsesNativeTiling();
+    const bool byte_offset_handles = Tegra::Texture::UsesHeaderByteOffsetHandles(
+        native_tiling, Settings::GetCurrentProgramID());
     // The descriptors are read through one host page each (see DescriptorTable::Read).
     const auto host_of = [&](GPUVAddr address, size_t size) -> const u8* {
         if ((address & Core::Memory::LICHII_PAGEMASK) + size > Core::Memory::LICHII_PAGESIZE) {
@@ -2078,7 +2029,8 @@ void TextureCache<P>::MemoizeTextures(SampledTextureMemo& memo,
     for (size_t i = 0; i < reads.size(); ++i) {
         const auto [view_index, sampler_index] = Tegra::Texture::TexturePair(reads[i].raw, via_header_index);
         const u32 tic_index =
-            Tegra::Texture::TextureHeaderIndex(view_index, image_table.current_limit, native_tiling);
+            Tegra::Texture::TextureHeaderIndex(view_index, image_table.current_limit,
+                                               byte_offset_handles);
         if (!views[i].id || !samplers[i] || !image_table.ContainsIndex(tic_index) ||
             !sampler_table.ContainsIndex(sampler_index)) {
             return;
@@ -2518,8 +2470,10 @@ bool TextureCache<P>::ColorTargetWrittenBeforeThisFrame(u32 index) noexcept {
 template <class P>
 ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
-    index = Tegra::Texture::TextureHeaderIndex(index, table.current_limit,
-                                               gpu_memory->UsesNativeTiling());
+    index = Tegra::Texture::TextureHeaderIndex(
+        index, table.current_limit,
+        Tegra::Texture::UsesHeaderByteOffsetHandles(gpu_memory->UsesNativeTiling(),
+                                                   Settings::GetCurrentProgramID()));
     if (!table.ContainsIndex(index)) {
         LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
         return NULL_IMAGE_VIEW_ID;
@@ -4550,7 +4504,7 @@ void TextureCache<P>::TickAsyncUnswizzle() {
     Image& image = slot_images[task.image_id];
 
     if (!task.initialized) {
-        task.total_size = MapSizeBytes(image);
+        task.total_size = image.guest_size_bytes;
         task.staging_buffer = runtime.UploadStagingBuffer(task.total_size, true);
 
         const auto& info = image.info;
@@ -4926,9 +4880,6 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         join_alias_indices.emplace(aliased_id, alias_index);
         new_image.flags |= ImageFlagBits::Alias;
-    }
-    if (!join_bad_overlap_ids.empty()) {
-        superseded_activity_frame = frame_tick;
     }
     for (const ImageId aliased_id : join_bad_overlap_ids) {
         ImageBase& aliased = slot_images[aliased_id];
@@ -5485,8 +5436,16 @@ void TextureCache<P>::ForEachSparseSegment(ImageBase& image, Func&& func) {
     constexpr bool RETURNS_BOOL = std::is_same_v<FuncReturn, bool>;
     const auto segments = gpu_memory->GetSubmappedRange(image.gpu_addr, image.guest_size_bytes);
     for (const auto& [gpu_addr, size] : segments) {
-        std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
-        ASSERT(cpu_addr);
+        const std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+        if (!cpu_addr) {
+            static std::atomic<u32> logged{};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(HW_GPU,
+                            "Skipping sparse texture segment {:#x}+{:#x}: no device address",
+                            gpu_addr, size);
+            }
+            continue;
+        }
         if constexpr (RETURNS_BOOL) {
             if (func(gpu_addr, *cpu_addr, size)) {
                 break;
@@ -6048,7 +6007,6 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     }
     lru_cache.Touch(image.lru_index, frame_tick);
-    image.last_use_frame = frame_tick;
 }
 
 template <class P>
@@ -6280,10 +6238,6 @@ void TextureCache<P>::NoteClearedWhole() {
         ImageBase& image = slot_images[slot_image_views[id].image_id];
         if (ClearWritesWhole(image.info, image.gpu_addr)) {
             image.load_tick = image.modification_tick;
-            if (slot_image_views[id].size == image.info.size) {
-                image.full_write_tick = image.modification_tick;
-                superseded_activity_frame = frame_tick;
-            }
         }
     };
     for (const ImageViewId id : render_targets.color_buffer_ids) {

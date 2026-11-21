@@ -20,10 +20,10 @@ An enhanced, high-performance fork of **[zortos293/Lichii](https://github.com/zo
 - **Zero-Deadlock Gameplay Transition:** Once boot loading completes, `SetActiveWorkerLimits` lowers concurrency cleanly via `std::condition_variable` without tearing down threads, restoring the conservative gameplay profile (**2 CPU + 1 Driver** on 6C/6T CPUs such as Core i5-9400F, i5-8400, or Ryzen 3500) to prevent thread thrashing and protect guest CPU, audio, and Vulkan submission threads.
 - Scalable dynamic profiles for 4-thread, 6-thread, 8-thread, 12-thread, and 16+ thread CPUs.
 
-### 2. VIP Shader Queue & Batch Syscalls
+### 2. VIP Shader Queue & Coordinated Batches
 - **4-Tier Priority Hierarchy:** `NeedNow` (blocking) -> `Vip` (essential gameplay) -> `Soon` (effects/particles) -> `Background` (precache).
 - Shaders with depth-write enabled and compute shaders are automatically classified as **VIP**, ensuring ground, environment, and characters compile before transparent smoke or dust.
-- **Syscall Batching (`BeginBatch` / `BatchScope`):** Coalesces rapid multi-shader dispatches into a single mutex acquisition and single `notify_all()` kernel syscall, eliminating context-switch storms.
+- **Job Grouping (`ShaderJobBatch`):** Groups related background shader compilation jobs for coordinated `Wait()` and `Cancel()` tracking without blocking execution.
 
 ### 3. Nx2FastDraw Same-Value Write Filter
 - Prevents spurious FastDraw breaks when game macros rewrite the same viewport, blend state, or vertex buffer parameters with identical values (`if (regs.reg_array[method] == argument) return;`).
@@ -57,18 +57,18 @@ An enhanced, high-performance fork of **[zortos293/Lichii](https://github.com/zo
   - **> 85% GPU VRAM (Emergency):** High-throughput eviction (15 frames, 128 iterations/frame) to swiftly reclaim space before driver OOM limits.
 - **Allocation & ShaderCacheWriter Memory Shield:** Protected with `try/catch` exception handlers in `JoinImages` and `CacheWriter` to ensure low-commit spikes or cache write delays never trigger process aborts.
 
-### 9. Draw Submission Batching (`DefaultNativeBudget = 256`)
-- Elevates native desktop submission batching from 128 to 256 draw calls, cutting Vulkan queue recording and submission frequency in half on 6-core CPUs while keeping discrete GPUs continuously supplied with work.
+### 9. Draw Submission Batching (`DefaultNativeBudget = 128`)
+- Uses a balanced native desktop submission budget of 128 draw calls, keeping queue submission overhead low on 6-core CPUs while ensuring discrete GPUs remain continuously supplied with work.
 - Guarantees immediate flushing on swapchain present and key render target transitions.
 
 ### 10. Low-Latency Micro-Spin for GPU Readbacks (`WaitForSyncOperation`)
 - Employs an ultra-short adaptive pause micro-spin loop prior to invoking the kernel condition variable wait during GPU-to-CPU read synchronization (`OnCPURead`).
 - Eliminates Windows kernel context switches and thread descheduling when fast discrete GPUs complete transfers in microseconds, with reliable fallback to kernel waits if transfers take longer.
 
-### 11. Multi-Entry Associative UBO Stream Cache (16-Way per Slot)
-- Upgrades uniform stream buffer reuse with a 16-way associative history cache per slot indexed by `device_addr` and verified with fast 64-bit CityHash comparison.
-- Eliminates repeated mapped staging allocations and memory copy overhead during round-robin draw call rendering across multi-actor scenes (e.g., 12-kart racing packs).
-- Elevates `MissStreak` tolerance to 32 to prevent cache deactivation when distinct actor matrices alternate continuously within a frame.
+### 11. Uniform Buffer Stream Reuse Cache
+- Reuses uniform stream buffer allocations per stage and cbuf slot, comparing snapshots with `std::memcmp` when `device_addr` matches.
+- Eliminates repeated mapped staging allocations and memory copy overhead during round-robin draw call rendering across multi-actor scenes.
+- Employs a `MissStreak` tolerance of 8 to disable caching when values change continuously within a frame.
 
 ### 12. GPU Front-End / Back-End Decoupling & Drain Elimination
 - **1-Frame Ahead for Mario Kart World:** Enables the guest CPU to prepare and emit command lists for frame $N+1$ concurrently while the GPU concludes presentation of frame $N$, completely removing synchronous presentation fence stalls (`acquire`).
@@ -100,14 +100,11 @@ An enhanced, high-performance fork of **[zortos293/Lichii](https://github.com/zo
 - Retains upload staging buffers up to 32 MiB permanently (2 per level) while adding a transient 120-frame (~2 s) TTL retention window for giant upload buffers (64 MiB–512 MiB, covering 288 MiB texture uploads).
 - Eliminates synchronous `vkCreateBuffer` / `vkAllocateMemory` stalls on consecutive large texture uploads without permanently pinning hundreds of MiB on 16 GB RAM systems.
 
-### 19. Immediate Superseded Render Target Cleanup (`ClassifySuperseded`, Credits: Tasarren)
-- Detects render targets and overlapping images whose guest memory range has been completely covered by newer cleared images (`full_write_tick`) at frame boundaries (`DeleteSupersededImages`), releasing their VRAM after 2 unused frames without waiting for the full GC cycle.
-
-### 20. Memory-Aware Boot Shader Budget & Transient 2D Draw Heuristic
+### 19. Memory-Aware Boot Shader Budget & Transient 2D Draw Heuristic
 - **Dynamic Boot Shader Cap (`ComputeDynamicBootPipelineCap`):** Sizes cold-cache boot shader precompilation dynamically from available host RAM and GPU VRAM budget (clamped between 1,024 and 32,768 pipelines) while respecting `KeptPipelines()`.
 - **Transient 2D Effect Heuristic (`CanDiscardTransient2DDraw`):** Allows asynchronous pipeline compilation for large or instanced transient 2D particle/effect draws into existing render targets without depth testing, while keeping persistent font atlas draws (30–672 vertices) strictly synchronous.
 
-### 21. CPU Stutter Elimination & Frame Pacing Engine (Build 1.13)
+### 20. CPU Stutter Elimination & Frame Pacing Engine (Build 1.13)
 - **ZeroTrim Exponential Backoff:** Tracks newly kernel zero-filled memory and trims only after active zero allocations exceed 64 MiB post-boot, backing off up to 300 s with an emergency wake-up when system commit headroom drops below 2 GiB. Eliminates ~29,000 periodic soft page faults and 1.0–1.6s CPU stalls every 11 seconds.
 - **Dual-VSync Elimination for 30 FPS Mode:** Extends the `b.lo` to unconditional branch bypass on `vblank_wait_site` to fixed 30 FPS mode (`mkw_30fps`), establishing `PaceToVblank` (`swap_interval = 2`) as the sole authoritative clock and eliminating the 0.3 ms clock drift that caused 66.6–73.3 ms frame hitches.
 - **8 MiB Stage Translation Texture Pool:** Expands `MaxFlushedTexturePoolBytes` from 4 MiB to 8 MiB, allowing 131,372-descriptor pools (e.g. Mario Kart World's 4.2 MB pool) to translate asynchronously on background shader workers instead of stalling `GPUBack`.
