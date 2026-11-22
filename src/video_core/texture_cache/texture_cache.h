@@ -172,7 +172,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
     u64 ticks_to_destroy = 0;
     size_t num_iterations = 0;
     const auto Configure = [&](bool allow_aggressive) {
-        const u64 total_gpu_vram = [&]() {
+        const u64 total_gpu_vram = [&]() -> u64 {
             if constexpr (requires { runtime.IsIntegrated(); }) {
                 if (runtime.IsIntegrated()) {
                     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
