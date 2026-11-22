@@ -533,8 +533,10 @@ void GpuSplit::WaitForSpace(size_t words) {
         }
         if (spins < 4096) {
             Pause();
-        } else {
+        } else if (spins < 65536) {
             std::this_thread::yield();
+        } else {
+            SleepForBack(target);
         }
     }
 }
