@@ -68,6 +68,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, use_multi_core, tr("Multicore CPU Emulation"),
            tr("This option increases CPU emulation thread use from 1 to the maximum of 4.\n"
               "This is mainly a debug option and shouldn't be disabled."));
+    INSERT(Settings, lazy_dram_commit, tr("Lazy Guest DRAM Commit (Windows)"),
+           tr("Reserves guest DRAM via SEC_RESERVE and commits pages on demand via VirtualAlloc, "
+              "reducing initial Windows process commit on 16 GB hosts."));
     INSERT(Settings, memory_layout_mode, tr("Memory Layout"),
            tr("Increases the amount of emulated RAM.\nDoesn't affect performance/stability but may "
               "allow HD texture "

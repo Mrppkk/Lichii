@@ -210,6 +210,7 @@ struct Values {
 
     // Core
     SwitchableSetting<bool> use_multi_core{linkage, true, "use_multi_core", Category::Core};
+    SwitchableSetting<bool> lazy_dram_commit{linkage, false, "lazy_dram_commit", Category::Core};
     SwitchableSetting<MemoryLayout, true> memory_layout_mode{linkage,
                                                              MemoryLayout::Memory_4Gb,
                                                              "memory_layout_mode",
