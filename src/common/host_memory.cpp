@@ -236,17 +236,31 @@ public:
         return ptr;
     }
 
+    [[nodiscard]] bool IsLazyCommit() const noexcept {
+        return lazy_commit;
+    }
+
     void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {
         std::unique_lock lock{placeholder_mutex};
-        if (!IsNiechePlaceholder(virtual_offset, length)) {
+        const bool was_nieche = IsNiechePlaceholder(virtual_offset, length);
+        if (!was_nieche) {
             Split(virtual_offset, length);
         }
         ASSERT(placeholders.find({virtual_offset, virtual_offset + length}) == placeholders.end());
-        TrackPlaceholder(virtual_offset, host_offset, length);
 
         if (!MapView(virtual_offset, host_offset, length)) {
             LOG_CRITICAL(HW_Memory, "Failed to map placeholder, error {}", GetLastError());
+            if (!was_nieche) {
+                const auto it = placeholders.lower_bound({virtual_offset, virtual_offset + length});
+                const size_t left_bound = it == placeholders.begin() ? 0 : std::prev(it)->upper();
+                const size_t right_bound = it == placeholders.end() ? virtual_size : it->lower();
+                if (left_bound != virtual_offset || right_bound != virtual_offset + length) {
+                    Coalesce(left_bound, right_bound - left_bound);
+                }
+            }
+            return;
         }
+        TrackPlaceholder(virtual_offset, host_offset, length);
     }
 
     void Unmap(size_t virtual_offset, size_t length) {
@@ -495,6 +509,11 @@ private:
             return false;
         }
         if (lazy_commit && !VirtualAlloc(view, length, MEM_COMMIT, PAGE_READWRITE)) {
+            const DWORD err = GetLastError();
+            if (!pfn_UnmapViewOfFile2(process, view, MEM_PRESERVE_PLACEHOLDER)) {
+                LOG_CRITICAL(HW_Memory, "Failed to unmap placeholder after commit failure");
+            }
+            SetLastError(err);
             return false;
         }
         return true;
@@ -1353,8 +1372,13 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
         return;
     }
 #ifdef _WIN32
-    if (Settings::values.lazy_dram_commit.GetValue() && backing_base) {
-        VirtualAlloc(backing_base + physical_offset, length, MEM_COMMIT, PAGE_READWRITE);
+    if (impl && impl->IsLazyCommit() && backing_base) {
+        if (!VirtualAlloc(backing_base + physical_offset, length, MEM_COMMIT, PAGE_READWRITE)) {
+            LOG_CRITICAL(HW_Memory,
+                         "Failed to commit backing region at {:#x} (size {:#x}), error {}",
+                         physical_offset, length, GetLastError());
+            return;
+        }
     }
 #endif
     MarkUsed(physical_offset, length);

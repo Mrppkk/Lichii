@@ -531,6 +531,7 @@ public:
     void PurgeStaleImagesOnSceneChange();
 
     bool is_purging{false};
+    u64 last_scene_purge_tick{0};
 
     Common::SpinRecursiveMutex mutex;
 

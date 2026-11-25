@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <source_location>
 #include <string_view>
 #include <thread>
@@ -321,7 +322,11 @@ template <typename Traits>
 void DeviceMemoryManager<Traits>::TrimZeroPages() const {
 #ifdef _WIN32
     if (device_memory_ptr) {
-        device_memory_ptr->buffer.TrimZeroPages();
+        try {
+            device_memory_ptr->buffer.TrimZeroPages();
+        } catch (const std::bad_alloc&) {
+            LOG_WARNING(HW_Memory, "Skipping zero-page trim due to low host memory");
+        }
     }
 #endif
 }

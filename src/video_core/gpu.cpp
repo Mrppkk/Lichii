@@ -364,7 +364,10 @@ struct GPU::Impl {
         raster_area.preemtive = true;
         // A guest CPU read of GPU-written memory (reactive flushing): counted and reported by the
         // 10s telemetry instead of logging on every read.
-        Tegra::g_telemetry_on_cpu_reads.fetch_add(1, std::memory_order_relaxed);
+        const u64 reads = Tegra::g_telemetry_on_cpu_reads.fetch_add(1, std::memory_order_relaxed) + 1;
+        if ((reads & 63) == 0) {
+            Tegra::FlushPeriodicTelemetry(std::chrono::steady_clock::now());
+        }
         namespace AsyncReadback = VideoCore::AsyncReadback;
         const u64 request = AsyncReadback::Now();
         const u64 area_size = raster_area.end_address - raster_area.start_address;

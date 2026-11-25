@@ -227,7 +227,10 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
 
 vk::Image MemoryAllocator::TryCreateImage(const VkImageCreateInfo &ci, bool dedicated) const {
     vk::Image image;
-    AllocateImage(ci, dedicated, true, image);
+    const VkResult result = AllocateImage(ci, dedicated, true, image);
+    if (result == VK_ERROR_DEVICE_LOST) {
+        vk::Check(result);
+    }
     return image;
 }
 
@@ -548,7 +551,10 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
 
 vk::Buffer MemoryAllocator::TryCreateBuffer(const VkBufferCreateInfo &ci, MemoryUsage usage) const {
     vk::Buffer buffer;
-    AllocateBuffer(ci, usage, 0, buffer);
+    const VkResult result = AllocateBuffer(ci, usage, 0, buffer);
+    if (result == VK_ERROR_DEVICE_LOST) {
+        vk::Check(result);
+    }
     return buffer;
 }
 

@@ -192,8 +192,10 @@ public:
             }
             if (spins < 4096) {
                 CopierPause();
-            } else {
+            } else if (spins < 4096 + 64) {
                 std::this_thread::yield();
+            } else {
+                completed.wait(done, std::memory_order_acquire);
             }
         }
     }

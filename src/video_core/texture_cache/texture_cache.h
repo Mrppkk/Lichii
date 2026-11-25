@@ -230,7 +230,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory, bool at_critical) 
             return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
         }();
         ticks_to_destroy =
-            EvictionAge(mode_age, min_age, total_used_memory, retention_limit, emergency_mode);
+            EvictionAge(mode_age, min_age, total_used_memory, retention_limit, out_of_memory);
     };
     // GPU-written images that overlap others without fitting them (BadOverlap) were dropped
     // without a download, their pages marked stale. The Duskbloods renders its characters'
@@ -568,7 +568,18 @@ void TextureCache<P>::PurgeStaleImagesOnSceneChange() {
     if (!Settings::values.purge_stale_on_scene_change.GetValue() || is_purging) {
         return;
     }
+    constexpr u64 ScenePurgeCooldownTicks = 300;
+    if (last_scene_purge_tick != 0 && frame_tick - last_scene_purge_tick < ScenePurgeCooldownTicks) {
+        return;
+    }
+    struct PurgeGuard {
+        bool& flag;
+        ~PurgeGuard() {
+            flag = false;
+        }
+    } purge_guard{is_purging};
     is_purging = true;
+    last_scene_purge_tick = frame_tick;
 
     const StutterTrace::SiteScope site{StutterTrace::Site::TextureCollect};
 
@@ -593,7 +604,8 @@ void TextureCache<P>::PurgeStaleImagesOnSceneChange() {
     boost::container::small_vector<ImageId, 64> stale_candidates;
     for (const auto [image_id, image] : slot_images) {
         if (True(image->flags & ImageFlagBits::BadOverlap) &&
-            False(image->flags & ImageFlagBits::IsDecoding)) {
+            False(image->flags & ImageFlagBits::IsDecoding) &&
+            False(image->flags & ImageFlagBits::GpuModified)) {
             stale_candidates.push_back(image_id);
         }
     }
@@ -610,7 +622,6 @@ void TextureCache<P>::PurgeStaleImagesOnSceneChange() {
     }
 
     device_memory.TrimZeroPages();
-    is_purging = false;
 }
 
 template <class P>
@@ -2388,14 +2399,36 @@ bool TextureCache<P>::RescaleRenderTargets() {
                 if (image_id != CORRUPT_ID) {
                     Image& image = slot_images[image_id];
                     ScaleUp(image);
+                    return True(image.flags & ImageFlagBits::Rescaled);
+                }
+                return true;
+            };
+            const auto scale_down = [this](ImageId image_id) {
+                if (image_id != CORRUPT_ID) {
+                    Image& image = slot_images[image_id];
+                    ScaleDown(image);
                 }
             };
             if (rescaled) {
+                bool all_scaled = true;
                 for (size_t index = 0; index < NUM_RT; ++index) {
-                    scale_up(tmp_color_images[index]);
+                    if (!scale_up(tmp_color_images[index])) {
+                        all_scaled = false;
+                    }
                 }
-                scale_up(tmp_depth_image);
-                scale_rating = 2;
+                if (!scale_up(tmp_depth_image)) {
+                    all_scaled = false;
+                }
+                if (all_scaled) {
+                    scale_rating = 2;
+                } else {
+                    for (size_t index = 0; index < NUM_RT; ++index) {
+                        scale_down(tmp_color_images[index]);
+                    }
+                    scale_down(tmp_depth_image);
+                    rescaled = false;
+                    scale_rating = 1;
+                }
             }
         } else {
             rescaled = false;
@@ -3264,9 +3297,19 @@ bool TextureCache<P>::TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& ds
         };
         if (rescaled(src_id) || rescaled(motion_id) || rescaled(dst_id) ||
             (depth_id && rescaled(depth_id))) {
+            bool all_rescaled = true;
             for (const ImageId id : {src_id, motion_id, dst_id, depth_id}) {
                 if (id && !rescaled(id) && ImageCanRescale(slot_images[id])) {
-                    ScaleUp(slot_images[id]);
+                    if (!ScaleUp(slot_images[id])) {
+                        all_rescaled = false;
+                    }
+                }
+            }
+            if (!all_rescaled) {
+                for (const ImageId id : {src_id, motion_id, dst_id, depth_id}) {
+                    if (id && rescaled(id)) {
+                        ScaleDown(slot_images[id]);
+                    }
                 }
             }
         }
@@ -4973,25 +5016,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
-    ImageId new_image_id{};
-    try {
-        new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
-        slot_images[new_image_id].load_tick = modification_tick;
-    } catch (const std::bad_alloc&) {
-        static u32 logged{};
-        if (logged++ < 32) {
-            LOG_ERROR(HW_GPU, "std::bad_alloc inserting {}x{}x{} image at {:#x}; skipping it",
-                      new_info.size.width, new_info.size.height, new_info.size.depth, gpu_addr);
-        }
-        return ImageId{};
-    } catch (const std::exception& e) {
-        static u32 logged{};
-        if (logged++ < 32) {
-            LOG_ERROR(HW_GPU, "Exception inserting {}x{}x{} image at {:#x}: {}; skipping it",
-                      new_info.size.width, new_info.size.height, new_info.size.depth, gpu_addr, e.what());
-        }
-        return ImageId{};
-    }
+    const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    slot_images[new_image_id].load_tick = modification_tick;
     if constexpr (requires(const Image& image) { image.OutOfMemory(); }) {
         if (slot_images[new_image_id].OutOfMemory()) {
             // Left out of the cache: lookups see no image (a null view) and make it again once
