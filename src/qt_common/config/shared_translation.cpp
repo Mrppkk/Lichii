@@ -386,6 +386,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, purge_stale_on_scene_change, tr("Purge Stale Textures on Scene Change"),
            tr("Flushes delayed texture destruction rings and superseded textures on bulk unmaps, "
               "preventing VRAM accumulation across consecutive tracks."));
+    INSERT(Settings, coalesce_pcie_readbacks, tr("Coalesce Contiguous PCIe Buffer Readbacks"),
+           tr("Merges contiguous readback slices within the same buffer into unified BufferCopy "
+              "requests to reduce DMA overhead."));
     INSERT(Settings, gpu_unswizzle_texture_size, tr("GPU Unswizzle Max Texture Size"),
            tr("Sets the maximum size (MiB) for GPU-based texture unswizzling.\n"
               "While the GPU is faster for medium and large textures, the CPU may be more "

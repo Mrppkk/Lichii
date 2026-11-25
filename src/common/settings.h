@@ -843,6 +843,9 @@ struct Values {
     SwitchableSetting<bool> purge_stale_on_scene_change{linkage, true, "purge_stale_on_scene_change",
                                                         Category::RendererHacks};
 
+    SwitchableSetting<bool> coalesce_pcie_readbacks{linkage, true, "coalesce_pcie_readbacks",
+                                                    Category::RendererHacks};
+
     SwitchableSetting<bool> pin_gpu_threads{linkage, true, "pin_gpu_threads",
                                             Category::RendererHacks};
 
