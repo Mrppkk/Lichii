@@ -383,6 +383,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, gpu_unswizzle_enabled, tr("GPU Unswizzle"),
            tr("Accelerates BCn 3D texture decoding using GPU compute.\n"
               "Disable if experiencing crashes or graphical glitches."));
+    INSERT(Settings, purge_stale_on_scene_change, tr("Purge Stale Textures on Scene Change"),
+           tr("Flushes delayed texture destruction rings and superseded textures on bulk unmaps, "
+              "preventing VRAM accumulation across consecutive tracks."));
     INSERT(Settings, gpu_unswizzle_texture_size, tr("GPU Unswizzle Max Texture Size"),
            tr("Sets the maximum size (MiB) for GPU-based texture unswizzling.\n"
               "While the GPU is faster for medium and large textures, the CPU may be more "
