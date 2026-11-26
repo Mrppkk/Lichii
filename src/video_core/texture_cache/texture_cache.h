@@ -4990,7 +4990,15 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     if (can_rescale) {
         for (const auto& copy : join_copies_to_do) {
             Image& sibling = slot_images[copy.id];
-            ScaleUp(sibling);
+            if (!ScaleUp(sibling)) {
+                can_rescale = false;
+                break;
+            }
+        }
+        if (!can_rescale) {
+            for (const auto& copy : join_copies_to_do) {
+                ScaleDown(slot_images[copy.id]);
+            }
         }
     } else {
         for (const auto& copy : join_copies_to_do) {
@@ -5203,8 +5211,14 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     }
 
     if (can_rescale) {
-        ScaleUp(new_image);
-    } else {
+        if (!ScaleUp(new_image)) {
+            can_rescale = false;
+            for (const auto& copy : join_copies_to_do) {
+                ScaleDown(slot_images[copy.id]);
+            }
+        }
+    }
+    if (!can_rescale) {
         ScaleDown(new_image);
     }
 
@@ -6233,11 +6247,34 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         return;
     }
     const bool can_rescale = ImageCanRescale(image);
-    if (any_rescaled) {
-        if (can_rescale) {
-            ScaleUp(image);
+    const auto& resolution = Settings::values.resolution_info;
+    bool will_rescale = resolution.active && any_rescaled && can_rescale;
+    if (will_rescale) {
+        for (const AliasedImage* const aliased : aliased_images) {
+            Image& aliased_image = slot_images[aliased->id];
+            if (!ImageCanRescale(aliased_image)) {
+                will_rescale = false;
+                break;
+            }
+        }
+    }
+    if (will_rescale) {
+        if (!ScaleUp(image)) {
+            will_rescale = false;
         } else {
-            ScaleDown(image);
+            for (const AliasedImage* const aliased : aliased_images) {
+                Image& aliased_image = slot_images[aliased->id];
+                if (!ScaleUp(aliased_image)) {
+                    will_rescale = false;
+                    break;
+                }
+            }
+        }
+    }
+    if (!will_rescale) {
+        ScaleDown(image);
+        for (const AliasedImage* const aliased : aliased_images) {
+            ScaleDown(slot_images[aliased->id]);
         }
     }
     SetModificationTick(slot_images, image, most_recent_tick);
@@ -6251,19 +6288,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         const ImageBase& rhs_image = slot_images[rhs->id];
         return lhs_image.modification_tick < rhs_image.modification_tick;
     });
-    const auto& resolution = Settings::values.resolution_info;
     for (const AliasedImage* const aliased : aliased_images) {
-        if (!resolution.active || !any_rescaled) {
-            CopyImage(image_id, aliased->id, aliased->copies);
-            continue;
-        }
-        Image& aliased_image = slot_images[aliased->id];
-        if (!can_rescale) {
-            ScaleDown(aliased_image);
-            CopyImage(image_id, aliased->id, aliased->copies);
-            continue;
-        }
-        ScaleUp(aliased_image);
         CopyImage(image_id, aliased->id, aliased->copies);
     }
 }

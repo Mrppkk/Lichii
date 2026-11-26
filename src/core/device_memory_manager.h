@@ -258,7 +258,8 @@ private:
     const uintptr_t physical_base;
     const DeviceMemory* device_memory_ptr;
     DeviceInterface* device_inter;
-    std::unique_ptr<Common::ThreadWorker> cold_hint_worker;
+    mutable std::unique_ptr<Common::ThreadWorker> cold_hint_worker;
+    mutable std::atomic<bool> trim_queued{false};
 
     struct TrackedEntry {
         VAddr cpu_backing_address;

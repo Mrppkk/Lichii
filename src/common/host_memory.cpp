@@ -1367,9 +1367,9 @@ std::pair<size_t, size_t> HostMemory::TrimZeroPages() const {
 #endif
 }
 
-void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {
+bool HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {
     if (length == 0) {
-        return;
+        return true;
     }
 #ifdef _WIN32
     if (impl && impl->IsLazyCommit() && backing_base) {
@@ -1377,7 +1377,7 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
             LOG_CRITICAL(HW_Memory,
                          "Failed to commit backing region at {:#x} (size {:#x}), error {}",
                          physical_offset, length, GetLastError());
-            return;
+            return false;
         }
     }
 #endif
@@ -1385,7 +1385,7 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
     if (fill_value != 0) {
         std::memset(backing_base + physical_offset, fill_value, length);
         MarkDirty(physical_offset, length);
-        return;
+        return true;
     }
     // Fresh backing memory is zero and the host gives it no RAM until it's touched: clear only
     // the granules that may hold data (title 1's heap made the host commit every page of it).
@@ -1419,6 +1419,7 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
         }
         offset = clear_end;
     }
+    return true;
 }
 
 void HostMemory::MarkUsed(size_t physical_offset, size_t length) {

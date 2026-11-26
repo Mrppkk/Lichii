@@ -472,7 +472,8 @@ bool MemoryAllocator::CreateImageInSeparatePool(const VkImageCreateInfo& ci,
     constexpr VkImageUsageFlags target_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                                                VK_IMAGE_USAGE_STORAGE_BIT;
-    if ((ci.usage & target_usage) == 0) {
+    if ((ci.usage & target_usage) == 0 ||
+        (alloc_ci.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0) {
         return false;
     }
     const auto& dld = device.GetDispatchLoader();
@@ -481,7 +482,32 @@ bool MemoryAllocator::CreateImageInSeparatePool(const VkImageCreateInfo& ci,
     if (dld.vkCreateImage(logical, &ci, nullptr, &image) != VK_SUCCESS) {
         return false;
     }
-    const VkMemoryRequirements requirements = device.GetLogical().GetImageMemoryRequirements(image);
+    VkMemoryDedicatedRequirements dedicated_requirements{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+        .pNext = nullptr,
+        .prefersDedicatedAllocation = VK_FALSE,
+        .requiresDedicatedAllocation = VK_FALSE,
+    };
+    VkMemoryRequirements2 requirements2{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+        .pNext = &dedicated_requirements,
+        .memoryRequirements = {},
+    };
+    const VkImageMemoryRequirementsInfo2 info{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+        .pNext = nullptr,
+        .image = image,
+    };
+    if (dld.vkGetImageMemoryRequirements2) {
+        dld.vkGetImageMemoryRequirements2(logical, &info, &requirements2);
+        if (dedicated_requirements.requiresDedicatedAllocation == VK_TRUE) {
+            dld.vkDestroyImage(logical, image, nullptr);
+            return false;
+        }
+    }
+    const VkMemoryRequirements requirements = dld.vkGetImageMemoryRequirements2
+                                                  ? requirements2.memoryRequirements
+                                                  : device.GetLogical().GetImageMemoryRequirements(image);
     u32 memory_type{};
     if (requirements.size <= Device::SeparatePoolBlockSize / 2 &&
         vmaFindMemoryTypeIndexForImageInfo(allocator, &ci, &alloc_ci, &memory_type) == VK_SUCCESS) {
